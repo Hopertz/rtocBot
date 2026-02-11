@@ -159,11 +159,12 @@ func ParseVehicles(vehicles string) []string {
 type NotifyFunc func(text string) error
 
 func StartScheduler(vehicles []string, notify NotifyFunc) {
-	slog.Info("scheduler started", "vehicles", vehicles, "start_time", fmt.Sprintf("%02d:%02d", startHour, startMin))
+	eat := time.FixedZone("EAT", 3*60*60)
+	slog.Info("scheduler started", "vehicles", vehicles, "start_time", fmt.Sprintf("%02d:%02d EAT", startHour, startMin))
 
 	for {
-		now := time.Now()
-		next := time.Date(now.Year(), now.Month(), now.Day(), startHour, startMin, 0, 0, now.Location())
+		now := time.Now().In(eat)
+		next := time.Date(now.Year(), now.Month(), now.Day(), startHour, startMin, 0, 0, eat)
 
 		if now.After(next) {
 			next = next.Add(24 * time.Hour)
