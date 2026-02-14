@@ -14,7 +14,7 @@ var apiURL string
 
 const (
 	timeoutSec = 30
-	gapMinutes = 10
+	gapMinutes = 30
 	startHour  = 18
 	startMin   = 0
 )
