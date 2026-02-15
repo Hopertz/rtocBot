@@ -96,11 +96,11 @@ func CheckVehicle(registration string) (*APIResponse, error) {
 func FormatResult(registration string, data *APIResponse) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("🚗 *RTOC Report for %s*\n", registration))
-	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━\n")
+	fmt.Fprintf(&sb, "🚗 *RTOC Report for %s*\n", registration)
+	fmt.Fprintf(&sb, "━━━━━━━━━━━━━━━━━━━━━\n")
 
 	if data.Status != "success" {
-		sb.WriteString("❌ No results found.\n")
+		fmt.Fprintf(&sb, "❌ No results found.\n")
 		return sb.String()
 	}
 
@@ -109,22 +109,22 @@ func FormatResult(registration string, data *APIResponse) string {
 		if data.TotalPendingAmount != nil {
 			total = *data.TotalPendingAmount
 		}
-		sb.WriteString(fmt.Sprintf("⚠️ *Pending Offences: %d* (Total: %s TZS)\n\n", len(data.PendingTransactions), total))
+		fmt.Fprintf(&sb, "⚠️ *Pending Offences: %d* (Total: %s TZS)\n\n", len(data.PendingTransactions), total)
 
 		for i, txn := range data.PendingTransactions {
-			sb.WriteString(fmt.Sprintf("*%d.* %s\n", i+1, txn.Offence))
-			sb.WriteString(fmt.Sprintf("   📍 %s\n", txn.Location))
-			sb.WriteString(fmt.Sprintf("   💰 Charge: %s | Penalty: %s\n", txn.Charge, txn.Penalty))
-			sb.WriteString(fmt.Sprintf("   🔖 Ref: %s\n", txn.Reference))
-			sb.WriteString(fmt.Sprintf("   📅 Issued: %s\n", txn.IssuedDate))
-			sb.WriteString(fmt.Sprintf("   📋 Status: %s\n\n", txn.Status))
+			fmt.Fprintf(&sb, "*%d.* %s\n", i+1, txn.Offence)
+			fmt.Fprintf(&sb, "   📍 %s\n", txn.Location)
+			fmt.Fprintf(&sb, "   💰 Charge: %s | Penalty: %s\n", txn.Charge, txn.Penalty)
+			fmt.Fprintf(&sb, "   🔖 Ref: %s\n", txn.Reference)
+			fmt.Fprintf(&sb, "   📅 Issued: %s\n", txn.IssuedDate)
+			fmt.Fprintf(&sb, "   📋 Status: %s\n\n", txn.Status)
 		}
 	} else {
-		sb.WriteString("✅ No pending offences.\n\n")
+		fmt.Fprintf(&sb, "✅ No pending offences.\n\n")
 	}
 
 	if len(data.InspectionData) > 0 {
-		sb.WriteString(fmt.Sprintf("🔍 *Inspection Records: %d*\n\n", len(data.InspectionData)))
+		fmt.Fprintf(&sb, "🔍 *Inspection Records: %d*\n\n", len(data.InspectionData))
 
 		for i, ins := range data.InspectionData {
 			date := ins.InspectionDate
@@ -135,13 +135,13 @@ func FormatResult(registration string, data *APIResponse) string {
 			if len(validUntil) > 10 {
 				validUntil = validUntil[:10]
 			}
-			sb.WriteString(fmt.Sprintf("*%d.* %s — *%s*\n", i+1, ins.ReasonEN, ins.FinalResult))
-			sb.WriteString(fmt.Sprintf("   📅 %s → %s\n", date, validUntil))
-			sb.WriteString(fmt.Sprintf("   📍 %s, %s\n", ins.Region, ins.District))
+			fmt.Fprintf(&sb, "*%d.* %s — *%s*\n", i+1, ins.ReasonEN, ins.FinalResult)
+			fmt.Fprintf(&sb, "   📅 %s → %s\n", date, validUntil)
+			fmt.Fprintf(&sb, "   📍 %s, %s\n", ins.Region, ins.District)
 			if ins.Remarks != "" {
-				sb.WriteString(fmt.Sprintf("   📝 %s\n", ins.Remarks))
+				fmt.Fprintf(&sb, "   📝 %s\n", ins.Remarks)
 			}
-			sb.WriteString("\n")
+			fmt.Fprintf(&sb, "\n")
 		}
 	}
 
