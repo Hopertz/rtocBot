@@ -137,7 +137,11 @@ func FormatResult(registration string, data *APIResponse) string {
 			}
 			sb.WriteString(fmt.Sprintf("*%d.* %s — *%s*\n", i+1, ins.ReasonEN, ins.FinalResult))
 			sb.WriteString(fmt.Sprintf("   📅 %s → %s\n", date, validUntil))
-			sb.WriteString(fmt.Sprintf("   📍 %s, %s\n\n", ins.Region, ins.District))
+			sb.WriteString(fmt.Sprintf("   📍 %s, %s\n", ins.Region, ins.District))
+			if ins.Remarks != "" {
+				sb.WriteString(fmt.Sprintf("   📝 %s\n", ins.Remarks))
+			}
+			sb.WriteString("\n")
 		}
 	}
 
