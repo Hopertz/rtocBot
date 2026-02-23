@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -14,7 +15,7 @@ import (
 )
 
 const (
-	start_txt   = "Use /check to check for vehicle road traffic offences or wait for vehicle road traffic offences notifications for listed vehicles. Type /stop to stop receiving notifications`"
+	start_txt   = "✅ Background checks started. Use /check to check for vehicle road traffic offences or wait for vehicle road traffic offences notifications for listed vehicles. Type /stop to stop receiving notifications."
 	unknown_cmd = "I don't know that command"
 )
 
@@ -76,12 +77,17 @@ func main() {
 	vehicleList := check.ParseVehicles(vehicles)
 	slog.Info("loaded vehicles", "count", len(vehicleList), "vehicles", vehicleList)
 
-	go check.StartScheduler(vehicleList, func(text string) error {
+	notify := func(text string) error {
 		msg := tgbotapi.NewMessage(masterID, text)
 		msg.ParseMode = "Markdown"
 		_, err := bot.Send(msg)
 		return err
-	})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var checkCancel context.CancelFunc
+
+	go check.StartScheduler(ctx, vehicleList, notify)
 
 	u := tgbotapi.NewUpdate(0)
 
@@ -105,14 +111,17 @@ func main() {
 
 		switch update.Message.Command() {
 		case "start":
+			cancel()
+			ctx, cancel = context.WithCancel(context.Background())
+			go check.StartScheduler(ctx, vehicleList, notify)
 			msg.Text = start_txt
 
 		case "help":
-			msg.Text = `
-			Commands for this @rtocbot are:
-			
-			/start  start the bot
-			/check <REG>  check a specific vehicle e.g. /check T945CEP`
+			msg.Text = `Commands:
+/start  start background checks
+/stop   stop background checks
+/check  check all listed vehicles
+/check <REG>  check a specific vehicle`
 
 		case "check":
 			args := strings.TrimSpace(update.Message.CommandArguments())
@@ -130,10 +139,25 @@ func main() {
 				slog.Error("failed to send msg", "err", err)
 			}
 
-			go func(registrations []string) {
+			if checkCancel != nil {
+				checkCancel()
+			}
+			var checkCtx context.Context
+			checkCtx, checkCancel = context.WithCancel(ctx)
+
+			go func(c context.Context, registrations []string) {
 				for i, reg := range registrations {
 					if i > 0 {
-						time.Sleep(10 * time.Minute)
+						select {
+						case <-c.Done():
+							return
+						case <-time.After(10 * time.Minute):
+						}
+					}
+					select {
+					case <-c.Done():
+						return
+					default:
 					}
 					data, err := check.CheckVehicle(reg)
 					reply := tgbotapi.NewMessage(masterID, "")
@@ -149,8 +173,15 @@ func main() {
 						slog.Error("failed to send check result", "err", err, "registration", reg)
 					}
 				}
-			}(regs)
+			}(checkCtx, regs)
 			continue
+
+		case "stop":
+			cancel()
+			if checkCancel != nil {
+				checkCancel()
+			}
+			msg.Text = "🛑 Background checks stopped. Use /start to resume."
 
 		default:
 			msg.Text = unknown_cmd

@@ -2,6 +2,7 @@ package check
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -162,7 +163,7 @@ func ParseVehicles(vehicles string) []string {
 
 type NotifyFunc func(text string) error
 
-func StartScheduler(vehicles []string, notify NotifyFunc) {
+func StartScheduler(ctx context.Context, vehicles []string, notify NotifyFunc) {
 	eat := time.FixedZone("EAT", 3*60*60)
 	slog.Info("scheduler started", "vehicles", vehicles, "start_time", fmt.Sprintf("%02d:%02d EAT", startHour, startMin))
 
@@ -177,19 +178,36 @@ func StartScheduler(vehicles []string, notify NotifyFunc) {
 		waitDuration := time.Until(next)
 		slog.Info("next scheduled run", "at", next.Format("2006-01-02 15:04:05"), "in", waitDuration.Round(time.Second))
 
-		time.Sleep(waitDuration)
+		select {
+		case <-ctx.Done():
+			slog.Info("scheduler stopped")
+			return
+		case <-time.After(waitDuration):
+		}
 
-		checkAllVehicles(vehicles, notify)
+		checkAllVehicles(ctx, vehicles, notify)
 	}
 }
 
-func checkAllVehicles(vehicles []string, notify NotifyFunc) {
+func checkAllVehicles(ctx context.Context, vehicles []string, notify NotifyFunc) {
 	slog.Info("starting daily vehicle check", "count", len(vehicles))
 
 	for i, reg := range vehicles {
 		if i > 0 {
 			slog.Info("waiting before next vehicle", "gap", fmt.Sprintf("%d minutes", gapMinutes), "next", reg)
-			time.Sleep(time.Duration(gapMinutes) * time.Minute)
+			select {
+			case <-ctx.Done():
+				slog.Info("vehicle check stopped")
+				return
+			case <-time.After(time.Duration(gapMinutes) * time.Minute):
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			slog.Info("vehicle check stopped")
+			return
+		default:
 		}
 
 		slog.Info("checking vehicle", "registration", reg)
