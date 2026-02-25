@@ -151,7 +151,7 @@ func main() {
 						select {
 						case <-c.Done():
 							return
-						case <-time.After(10 * time.Minute):
+						case <-time.After(30*time.Minute + time.Duration(time.Now().UnixNano()%5)*time.Minute):
 						}
 					}
 					select {

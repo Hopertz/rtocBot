@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"strings"
 	"time"
@@ -19,10 +20,13 @@ import (
 var apiURL string
 
 const (
-	timeoutSec = 30
-	gapMinutes = 30
-	startHour  = 18
-	startMin   = 0
+	timeoutSec  = 30
+	gapMinutes  = 30
+	jitterMin   = 5
+	startHour   = 18
+	startMin    = 0
+	maxRetries  = 3
+	baseBackoff = 2 * time.Minute
 )
 
 func SetAPIURL(url string) {
@@ -120,46 +124,81 @@ func decryptPayload(payload string) ([]byte, error) {
 	return plaintext, nil
 }
 
+func doRequest(payload []byte) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("Origin", "https://tms.tpf.go.tz")
+	req.Header.Set("Referer", "https://tms.tpf.go.tz/")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	return client.Do(req)
+}
+
 func CheckVehicle(registration string) (*APIResponse, error) {
 	payload, err := json.Marshal(map[string]string{"vehicle": registration})
 	if err != nil {
 		return nil, fmt.Errorf("marshal payload: %w", err)
 	}
 
-	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
-
-	resp, err := client.Post(apiURL, "application/json", bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("post request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	switch resp.StatusCode {
-	case http.StatusOK:
-		var encrypted encryptedResponse
-		if err := json.NewDecoder(resp.Body).Decode(&encrypted); err != nil {
-			return nil, fmt.Errorf("decode response: %w", err)
+	var lastErr error
+	for attempt := range maxRetries {
+		if attempt > 0 {
+			backoff := baseBackoff * time.Duration(1<<(attempt-1))
+			jitter := time.Duration(rand.Int63n(int64(30 * time.Second)))
+			wait := backoff + jitter
+			slog.Info("retrying after rate limit", "attempt", attempt+1, "wait", wait.Round(time.Second))
+			time.Sleep(wait)
 		}
 
-		if encrypted.Payload == "" {
-			return nil, fmt.Errorf("empty payload in response")
-		}
-
-		decrypted, err := decryptPayload(encrypted.Payload)
+		resp, err := doRequest(payload)
 		if err != nil {
-			return nil, fmt.Errorf("decrypt payload: %w", err)
+			return nil, fmt.Errorf("post request: %w", err)
 		}
 
-		var result APIResponse
-		if err := json.Unmarshal(decrypted, &result); err != nil {
-			return nil, fmt.Errorf("decode decrypted response: %w", err)
+		switch resp.StatusCode {
+		case http.StatusOK:
+			var encrypted encryptedResponse
+			if err := json.NewDecoder(resp.Body).Decode(&encrypted); err != nil {
+				resp.Body.Close()
+				return nil, fmt.Errorf("decode response: %w", err)
+			}
+			resp.Body.Close()
+
+			if encrypted.Payload == "" {
+				return nil, fmt.Errorf("empty payload in response")
+			}
+
+			decrypted, err := decryptPayload(encrypted.Payload)
+			if err != nil {
+				return nil, fmt.Errorf("decrypt payload: %w", err)
+			}
+
+			var result APIResponse
+			if err := json.Unmarshal(decrypted, &result); err != nil {
+				return nil, fmt.Errorf("decode decrypted response: %w", err)
+			}
+			return &result, nil
+
+		case http.StatusTooManyRequests:
+			resp.Body.Close()
+			lastErr = fmt.Errorf("rate limited (429): attempt %d/%d", attempt+1, maxRetries)
+			slog.Warn("rate limited by API", "attempt", attempt+1, "max", maxRetries)
+			continue
+
+		default:
+			resp.Body.Close()
+			return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 		}
-		return &result, nil
-	case http.StatusTooManyRequests:
-		return nil, fmt.Errorf("rate limited (429): too many requests, try again later")
-	default:
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
+
+	return nil, fmt.Errorf("gave up after %d retries: %w", maxRetries, lastErr)
 }
 
 func FormatResult(registration string, data *APIResponse) string {
@@ -262,12 +301,14 @@ func checkAllVehicles(ctx context.Context, vehicles []string, notify NotifyFunc)
 
 	for i, reg := range vehicles {
 		if i > 0 {
-			slog.Info("waiting before next vehicle", "gap", fmt.Sprintf("%d minutes", gapMinutes), "next", reg)
+			jitterDur := time.Duration(rand.Int63n(int64(jitterMin))) * time.Minute
+			gap := time.Duration(gapMinutes)*time.Minute + jitterDur
+			slog.Info("waiting before next vehicle", "gap", gap.Round(time.Second), "next", reg)
 			select {
 			case <-ctx.Done():
 				slog.Info("vehicle check stopped")
 				return
-			case <-time.After(time.Duration(gapMinutes) * time.Minute):
+			case <-time.After(gap):
 			}
 		}
 
