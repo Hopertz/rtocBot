@@ -81,6 +81,36 @@ type APIResponse struct {
 	InspectionData      []InspectionData     `json:"inspection_data"`
 }
 
+func b64Decode(s string) ([]byte, error) {
+	// Strip any whitespace (node-forge's decode64 is lenient)
+	s = strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
+			return -1
+		}
+		return r
+	}, s)
+
+	// Add padding if missing
+	if m := len(s) % 4; m != 0 {
+		s += strings.Repeat("=", 4-m)
+	}
+
+	return base64.StdEncoding.DecodeString(s)
+}
+
+func isBase64(data []byte) bool {
+	s := strings.TrimSpace(string(data))
+	if len(s) == 0 || len(s)%4 != 0 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=') {
+			return false
+		}
+	}
+	return true
+}
+
 func decryptPayload(payload string) ([]byte, error) {
 	keyBytes := []byte(encryptionKey[:32])
 
@@ -88,9 +118,23 @@ func decryptPayload(payload string) ([]byte, error) {
 	ivHex := hex.EncodeToString(hash[:])[:16]
 	ivBytes := []byte(ivHex)
 
-	ciphertext, err := base64.StdEncoding.DecodeString(payload)
+	// First base64 decode
+	decoded, err := b64Decode(payload)
 	if err != nil {
 		return nil, fmt.Errorf("base64 decode: %w", err)
+	}
+
+	// Check for double base64 encoding (matches website JS logic)
+	if isBase64(decoded) {
+		inner, err := b64Decode(string(decoded))
+		if err == nil && len(inner) > 0 {
+			slog.Info("double base64 detected, unwrapped one layer")
+			decoded = inner
+		}
+	}
+
+	if len(decoded)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("ciphertext length %d is not a multiple of block size %d", len(decoded), aes.BlockSize)
 	}
 
 	block, err := aes.NewCipher(keyBytes)
@@ -98,13 +142,9 @@ func decryptPayload(payload string) ([]byte, error) {
 		return nil, fmt.Errorf("new cipher: %w", err)
 	}
 
-	if len(ciphertext)%aes.BlockSize != 0 {
-		return nil, fmt.Errorf("ciphertext length %d is not a multiple of block size", len(ciphertext))
-	}
-
 	mode := cipher.NewCBCDecrypter(block, ivBytes)
-	plaintext := make([]byte, len(ciphertext))
-	mode.CryptBlocks(plaintext, ciphertext)
+	plaintext := make([]byte, len(decoded))
+	mode.CryptBlocks(plaintext, decoded)
 
 	// PKCS7 unpad
 	if len(plaintext) == 0 {
