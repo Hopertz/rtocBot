@@ -3,6 +3,11 @@ package check
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -22,6 +27,12 @@ const (
 
 func SetAPIURL(url string) {
 	apiURL = url
+}
+
+const encryptionKey = "irtismutDkjQBbZKEUn8hw7WqKdxld01E6HIY"
+
+type encryptedResponse struct {
+	Payload string `json:"payload"`
 }
 
 type PendingTransaction struct {
@@ -66,6 +77,49 @@ type APIResponse struct {
 	InspectionData      []InspectionData     `json:"inspection_data"`
 }
 
+func decryptPayload(payload string) ([]byte, error) {
+	keyBytes := []byte(encryptionKey[:32])
+
+	hash := sha256.Sum256([]byte(encryptionKey))
+	ivHex := hex.EncodeToString(hash[:])[:16]
+	ivBytes := []byte(ivHex)
+
+	ciphertext, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return nil, fmt.Errorf("base64 decode: %w", err)
+	}
+
+	block, err := aes.NewCipher(keyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("new cipher: %w", err)
+	}
+
+	if len(ciphertext)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("ciphertext length %d is not a multiple of block size", len(ciphertext))
+	}
+
+	mode := cipher.NewCBCDecrypter(block, ivBytes)
+	plaintext := make([]byte, len(ciphertext))
+	mode.CryptBlocks(plaintext, ciphertext)
+
+	// PKCS7 unpad
+	if len(plaintext) == 0 {
+		return nil, fmt.Errorf("empty plaintext after decryption")
+	}
+	padLen := int(plaintext[len(plaintext)-1])
+	if padLen > aes.BlockSize || padLen == 0 {
+		return nil, fmt.Errorf("invalid PKCS7 padding: %d", padLen)
+	}
+	for i := len(plaintext) - padLen; i < len(plaintext); i++ {
+		if plaintext[i] != byte(padLen) {
+			return nil, fmt.Errorf("invalid PKCS7 padding at byte %d", i)
+		}
+	}
+	plaintext = plaintext[:len(plaintext)-padLen]
+
+	return plaintext, nil
+}
+
 func CheckVehicle(registration string) (*APIResponse, error) {
 	payload, err := json.Marshal(map[string]string{"vehicle": registration})
 	if err != nil {
@@ -82,9 +136,23 @@ func CheckVehicle(registration string) (*APIResponse, error) {
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		var result APIResponse
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		var encrypted encryptedResponse
+		if err := json.NewDecoder(resp.Body).Decode(&encrypted); err != nil {
 			return nil, fmt.Errorf("decode response: %w", err)
+		}
+
+		if encrypted.Payload == "" {
+			return nil, fmt.Errorf("empty payload in response")
+		}
+
+		decrypted, err := decryptPayload(encrypted.Payload)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt payload: %w", err)
+		}
+
+		var result APIResponse
+		if err := json.Unmarshal(decrypted, &result); err != nil {
+			return nil, fmt.Errorf("decode decrypted response: %w", err)
 		}
 		return &result, nil
 	case http.StatusTooManyRequests:
